@@ -1,0 +1,25 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<h2>🔐 Админка — Управление идеями</h2>
+<p>Только для администрации школы.</p>
+
+{% if ideas %}
+  {% for idea in ideas %}
+  <div class="idea admin-idea">
+    <p><strong>{{ idea.text }}</strong></p>
+    <div class="meta">
+      <span>IP автора: {{ idea.ip }}</span>
+      <span>Голосов: {{ idea.votes }}</span>
+      <span>Добавлено: {{ idea.created_at }}</span>
+      <a href="{{ url_for('delete_idea', idea_id=idea.id) }}?password={{ request.args.get('password') }}" 
+         onclick="return confirm('Удалить идею?')">🗑️ Удалить</a>
+    </div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p>Нет идей.</p>
+{% endif %}
+
+<a href="{{ url_for('index') }}">← Вернуться на главную</a>
+{% endblock %}
