@@ -12,30 +12,24 @@ DB_PATH = 'ideas.db'
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "school123")
 MAX_IMAGE_SIZE = 2 * 1024 * 1024  # 2 MB
 
-# --- Список запрещённых слов (расширенный для школы) ---
+# --- Список запрещённых слов ---
 BAD_WORDS = {
-    # Мат и грубая лексика
     'бля', 'бляд', 'еб', 'ёб', 'хуй', 'пизд', 'сука', 'суч', 'нахуй', 'нахер', 'охуел', 'охуев', 'ахуеть',
     'гандон', 'говно', 'дроч', 'ебал', 'ебан', 'ебаш', 'залуп', 'мудил', 'мудоз', 'пидор', 'педик', 'пидар',
     'срать', 'ссать', 'трах', 'чмо', 'шлюх', 'шалав', 'урод', 'скотина', 'мерзавец', 'гад', 'сволочь',
-    # 18+ и опасный контент
     'порно', 'секс', 'интим', 'эротик', 'голый', 'обнаж', 'нюд', 'nude', 'porn', 'xxx', 'sex', 'boobs', 'dick',
     'жестоко', 'убить', 'смерть', 'повеситься', 'суицид', 'наркотик', 'марихуан', 'амфетамин', 'кокаин',
     'оружие', 'бомба', 'взорвать', 'террор', 'кровь', 'резать', 'нож', 'пистолет', 'насиль', 'изнасил'
 }
 
 def contains_bad_words(text):
-    """Проверяет текст на наличие запрещённых слов (игнорируя регистр, символы, опечатки)"""
     if not text:
         return False
-    
-    # Удаляем всё кроме букв и пробелов, приводим к нижнему регистру
     clean = re.sub(r'[^а-яa-z\s]', '', text.lower())
     words = clean.split()
-    
     for word in words:
         for bad in BAD_WORDS:
-            if bad in word:  # частичное совпадение: "ебаный" → содержит "ебан"
+            if bad in word:
                 return True
     return False
 
@@ -85,7 +79,7 @@ def process_image(file):
     except:
         return None
 
-# --- HTML: главная страница ---
+# --- HTML: главная ---
 def get_index_html(ideas):
     ideas_html = ""
     for idea in ideas:
@@ -118,14 +112,15 @@ def get_index_html(ideas):
             .idea {{ background: #f8f9fa; padding: 16px; margin: 16px 0; border-radius: 10px; border-left: 4px solid #3498db; }}
             .idea-img {{ max-width: 100%; height: auto; border-radius: 8px; margin-bottom: 10px; display: block; }}
             .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 14px; color: #666; }}
-            .meta a {{ color: #e74c3c; text-decoration: none; font-weight: bold; }}
-            .error {{ color: #e74c3c; background: #fdf2f2; padding: 10px; border-radius: 6px; margin: 10px 0; }}
+            .meta a {{ color: #27ae60; text-decoration: none; font-weight: bold; }}
+            .footer {{ margin-top: 30px; font-size: 12px; color: #777; text-align: center; }}
+            .footer a {{ color: #777; text-decoration: underline; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🗣️ Голос класса</h1>
-            <p>Анонимно предлагай идеи и прикрепляй фото!</p>
+            <p>Анонимно предлагай идеи и прикрепляй фото! Запрещены: мат, 18+, агрессия.</p>
             <form method="POST" action="/add" enctype="multipart/form-data">
                 <textarea name="text" placeholder="Напиши свою идею (до 200 символов)..." maxlength="200" required></textarea>
                 <input type="file" name="image" accept="image/*">
@@ -134,6 +129,9 @@ def get_index_html(ideas):
             <hr>
             <h2>Идеи (по голосам)</h2>
             {ideas_html if ideas_html else "<p>Пока нет идей. Будь первым!</p>"}
+            <div class="footer">
+                <a href="/privacy">Политика конфиденциальности</a>
+            </div>
         </div>
     </body>
     </html>
@@ -182,6 +180,63 @@ def get_admin_html(ideas, password):
     </html>
     '''
 
+# --- HTML: политика конфиденциальности ---
+def get_privacy_html():
+    return '''
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Политика конфиденциальности — Голос класса</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; background: #fff; }
+            h1 { color: #2c3e50; }
+            h2 { color: #3498db; margin-top: 20px; }
+            p { margin: 10px 0; }
+            .back { margin-top: 30px; }
+            .back a { color: #3498db; text-decoration: none; }
+        </style>
+    </head>
+    <body>
+        <h1>Политика конфиденциальности</h1>
+        <p><strong>Веб-приложение «Голос класса»</strong></p>
+        <p><em>Последнее обновление: 1 апреля 2025 г.</em></p>
+
+        <h2>1. Общие положения</h2>
+        <p>Сервис создан для анонимного предложения идей по улучшению школьной жизни. Мы уважаем вашу конфиденциальность.</p>
+
+        <h2>2. Какие данные мы собираем?</h2>
+        <ul>
+            <li>Текст идеи (до 200 символов)</li>
+            <li>Изображение (опционально, до 2 МБ)</li>
+            <li>IP-адрес — только для модерации и предотвращения накрутки голосов</li>
+        </ul>
+        <p><strong>Имя, фамилия, email — НЕ собираются.</strong> Все идеи публикуются анонимно.</p>
+
+        <h2>3. Для чего используются данные?</h2>
+        <p>IP-адрес используется ТОЛЬКО для:</p>
+        <ul>
+            <li>Ограничения: 1 голос от 1 пользователя за 1 идею</li>
+            <li>Удаления спама, мата, 18+ контента</li>
+            <li>Модерации администрацией школы</li>
+        </ul>
+        <p>IP недоступен другим пользователям.</p>
+
+        <h2>4. Хранение данных</h2>
+        <p>Данные хранятся на сервере Render.com. При простое сайта более 15 минут данные могут быть удалены (ограничение бесплатного тарифа).</p>
+
+        <h2>5. Модерация</h2>
+        <p>Система автоматически блокирует идеи с матом, 18+, призывами к насилию. Администрация может удалять посты вручную.</p>
+
+        <h2>6. Контакты</h2>
+        <p>Вопросы — к куратору проекта (учителю информатики / классному руководителю).</p>
+
+        <div class="back"><a href="/">← Вернуться на главную</a></div>
+    </body>
+    </html>
+    '''
+
 # --- Роуты ---
 @app.route('/')
 def index():
@@ -194,12 +249,7 @@ def index():
 @app.route('/add', methods=['POST'])
 def add_idea():
     text = request.form.get('text', '').strip()
-    
-    # Валидация текста
-    if not text or len(text) > 200:
-        return redirect('/')
-    if contains_bad_words(text):
-        # В реальном проекте можно показать ошибку, но для анонимности — просто игнорируем
+    if not text or len(text) > 200 or contains_bad_words(text):
         return redirect('/')
     
     user_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
@@ -215,6 +265,7 @@ def add_idea():
 def vote(idea_id):
     user_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
     conn = sqlite3.connect(DB_PATH)
+    # Проверяем, голосовал ли этот IP за эту идею
     exists = conn.execute("SELECT 1 FROM votes WHERE idea_id = ? AND ip = ?", (idea_id, user_ip)).fetchone()
     if not exists:
         conn.execute("UPDATE ideas SET votes = votes + 1 WHERE id = ?", (idea_id,))
@@ -245,6 +296,10 @@ def delete_idea(idea_id):
     conn.commit()
     conn.close()
     return redirect(f'/admin?password={password}')
+
+@app.route('/privacy')
+def privacy():
+    return get_privacy_html()
 
 # --- Запуск ---
 if __name__ == '__main__':
