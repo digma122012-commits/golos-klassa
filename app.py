@@ -2,19 +2,17 @@ import os
 import sqlite3
 import base64
 import re
-import requests
-from flask import Flask, request, redirect, render_template_string, send_file, jsonify
+from flask import Flask, request, redirect, render_template_string, send_file
 import tempfile
 
-# --- Настройки ---
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "render-secret-key-for-school")
+app.secret_key = os.environ.get("SECRET_KEY", "render-secret-key")
 
 DB_PATH = 'ideas.db'
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "school123")
-MAX_IMAGE_SIZE = 2 * 1024 * 1024  # 2 MB
+MAX_IMAGE_SIZE = 2 * 1024 * 1024
 
-# --- Список запрещённых слов ---
+# --- Мат и 18+ ---
 BAD_WORDS = {
     'бля', 'бляд', 'еб', 'ёб', 'хуй', 'пизд', 'сука', 'суч', 'нахуй', 'нахер', 'охуел', 'охуев', 'ахуеть',
     'гандон', 'говно', 'дроч', 'ебал', 'ебан', 'ебаш', 'залуп', 'мудил', 'мудоз', 'пидор', 'педик', 'пидар',
@@ -36,27 +34,11 @@ def contains_bad_words(text):
     return False
 
 def get_real_ip():
-    """Надёжное получение IP пользователя на Render"""
     if request.headers.getlist("X-Forwarded-For"):
         ip = request.headers.get("X-Forwarded-For").split(",")[0].strip()
     else:
         ip = request.remote_addr or '127.0.0.1'
     return ip
-
-def get_location_by_ip(ip):
-    if ip in ('127.0.0.1', 'localhost', '::1'):
-        return "Локальный хост"
-    try:
-        response = requests.get(f"https://ipapi.co/{ip}/json/", timeout=2)
-        if response.status_code == 200:
-            data = response.json()
-            city = data.get("city") or "Неизвестно"
-            region = data.get("region") or ""
-            org = data.get("org") or "Неизвестно"
-            return f"{city} ({region}), {org}"
-    except:
-        pass
-    return "Не удалось определить"
 
 # --- Инициализация БД ---
 def init_db():
@@ -69,7 +51,6 @@ def init_db():
             ip TEXT NOT NULL,
             image_data TEXT,
             votes INTEGER DEFAULT 0,
-            reply TEXT,  -- ответ от админа
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -80,10 +61,20 @@ def init_db():
             PRIMARY KEY (idea_id, ip)
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (idea_id) REFERENCES ideas(id) ON DELETE CASCADE
+        )
+    ''')
     conn.commit()
     conn.close()
 
-# --- Обработка изображения ---
+# --- Обработка фото ---
 def process_image(file):
     if not file or not file.filename:
         return None
@@ -105,13 +96,9 @@ def process_image(file):
     except:
         return None
 
-# --- Сохранение фото во временный файл для скачивания ---
+# --- Скачивание фото (публичное) ---
 @app.route('/download/<int:idea_id>')
 def download_image(idea_id):
-    password = request.args.get('password')
-    if password != ADMIN_PASSWORD:
-        return "Доступ запрещён", 403
-
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     idea = conn.execute("SELECT image_data FROM ideas WHERE id = ?", (idea_id,)).fetchone()
@@ -133,19 +120,32 @@ def download_image(idea_id):
         return f"Ошибка: {e}", 500
 
 # --- HTML: главная ---
-def get_index_html(ideas):
-    ideas_html = ""
-    for idea in ideas:
+def get_index_html(ideas_with_replies):
+    content = ""
+    for idea in ideas_with_replies:
         img = f'<img src="{idea["image_data"]}" class="idea-img">' if idea["image_data"] else ""
-        reply = f'<div class="reply">💬 Ответ: {idea["reply"]}</div>' if idea["reply"] else ""
-        ideas_html += f'''
+        download_btn = f' <a href="/download/{idea["id"]}" class="download-btn">💾 Скачать</a>' if idea["image_data"] else ""
+        
+        replies_html = ""
+        for reply in idea.get("replies", []):
+            replies_html += f'<div class="reply"><p>{reply["text"]}</p></div>'
+
+        content += f'''
         <div class="idea">
             {img}
             <p>{idea["text"]}</p>
-            {reply}
+            {download_btn}
             <div class="meta">
                 <span>Голосов: {idea["votes"]}</span>
                 <a href="/vote/{idea["id"]}">✅ Поддержать</a>
+            </div>
+            <div class="replies">
+                {replies_html}
+                <form method="POST" action="/reply" class="reply-form">
+                    <input type="hidden" name="idea_id" value="{idea["id"]}">
+                    <input type="text" name="text" placeholder="Ваш ответ (до 150 символов)..." maxlength="150" required>
+                    <button type="submit">📨 Ответить</button>
+                </form>
             </div>
         </div>
         '''
@@ -161,126 +161,107 @@ def get_index_html(ideas):
             body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; margin: 0; padding: 16px; color: #333; }}
             .container {{ max-width: 700px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }}
             h1 {{ color: #2c3e50; text-align: center; margin-top: 0; }}
-            textarea {{ width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; resize: vertical; min-height: 80px; }}
-            button {{ background: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-size: 16px; width: 100%; margin-top: 10px; }}
-            input[type="file"] {{ margin: 10px 0; width: 100%; }}
+            textarea, input[type="text"] {{ width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; resize: vertical; }}
+            button {{ background: #3498db; color: white; border: none; padding: 12px 20px; border-radius: 8px; cursor: pointer; font-size: 16px; }}
             .idea {{ background: #f8f9fa; padding: 16px; margin: 16px 0; border-radius: 10px; border-left: 4px solid #3498db; }}
             .idea-img {{ max-width: 100%; height: auto; border-radius: 8px; margin-bottom: 10px; display: block; }}
-            .reply {{ background: #e8f4fc; padding: 8px; border-radius: 6px; margin: 10px 0; font-style: italic; color: #2980b9; }}
+            .download-btn {{ font-size: 14px; color: #27ae60; text-decoration: none; }}
+            .replies {{ margin-top: 15px; border-top: 1px dashed #ddd; padding-top: 15px; }}
+            .reply {{ background: #e8f4fc; padding: 10px; border-radius: 6px; margin: 8px 0; font-style: italic; color: #2980b9; }}
+            .reply-form {{ display: flex; gap: 10px; margin-top: 10px; }}
+            .reply-form input {{ flex: 1; }}
+            .reply-form button {{ padding: 10px 15px; font-size: 14px; }}
             .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 14px; color: #666; }}
             .meta a {{ color: #27ae60; text-decoration: none; font-weight: bold; }}
-            .footer {{ margin-top: 30px; font-size: 12px; color: #777; text-align: center; }}
-            .footer a {{ color: #777; text-decoration: underline; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🗣️ Голос класса</h1>
-            <p>Анонимно предлагай идеи и прикрепляй фото! Запрещены: мат, 18+, агрессия.</p>
+            <p>Анонимно предлагай идеи, отвечай и скачивай фото!</p>
             <form method="POST" action="/add" enctype="multipart/form-data">
-                <textarea name="text" placeholder="Напиши свою идею (до 200 символов)..." maxlength="200" required></textarea>
+                <textarea name="text" placeholder="Напиши идею (до 200 символов)..." maxlength="200" required></textarea>
                 <input type="file" name="image" accept="image/*">
                 <button type="submit">➕ Добавить идею</button>
             </form>
             <hr>
             <h2>Идеи (по голосам)</h2>
-            {ideas_html if ideas_html else "<p>Пока нет идей. Будь первым!</p>"}
-            <div class="footer">
-                <a href="/privacy">Политика конфиденциальности</a>
-            </div>
+            {content if content else "<p>Пока нет идей. Будь первым!</p>"}
         </div>
     </body>
     </html>
     '''
 
-# --- HTML: админка ---
+# --- Админка (только удаление) ---
 def get_admin_html(ideas, password):
-    ideas_html = ""
+    content = ""
     for idea in ideas:
         img = f'<img src="{idea["image_data"]}" class="admin-img">' if idea["image_data"] else "<span>Нет фото</span>"
-        location = get_location_by_ip(idea["ip"])
-        download_link = f' | <a href="/download/{idea["id"]}?password={password}">💾 Скачать фото</a>' if idea["image_data"] else ""
-        reply_input = f'''
-        <form method="POST" action="/admin/reply" style="margin-top:8px;">
-            <input type="hidden" name="idea_id" value="{idea["id"]}">
-            <input type="hidden" name="password" value="{password}">
-            <input type="text" name="reply" placeholder="Ответ на идею..." value="{idea["reply"] or ""}" style="width:60%; padding:5px; font-size:14px;">
-            <button type="submit" style="padding:5px 10px; font-size:14px;">📨 Отправить ответ</button>
-        </form>
-        '''
-        ideas_html += f'''
+        location = "Сервер Render"  # Геолокацию убрали для простоты
+        content += f'''
         <div class="idea">
             {img}
             <p><strong>{idea["text"]}</strong></p>
             <div class="meta">
                 <span>IP: {idea["ip"]}</span>
-                <span>📍 {location}</span>
                 <span>Голосов: {idea["votes"]}</span>
-                <a href="/admin/delete/{idea["id"]}?password={password}" onclick="return confirm('Удалить?')">🗑️ Удалить</a>
-                {download_link}
+                <a href="/admin/delete/idea/{idea["id"]}?password={password}" onclick="return confirm('Удалить идею и ответы?')">🗑️ Удалить идею</a>
             </div>
-            {reply_input}
         </div>
         '''
     return f'''
     <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Админка — Голос класса</title>
-        <style>
-            * {{ box-sizing: border-box; }}
-            body {{ font-family: sans-serif; background: #f9f9f9; padding: 16px; }}
-            .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }}
-            .idea {{ background: #fef6f6; padding: 15px; margin: 15px 0; border-radius: 8px; }}
-            .admin-img {{ max-width: 200px; height: auto; border: 1px solid #eee; margin: 5px 0; }}
-            .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 13px; }}
-            .meta a {{ color: #c0392b; text-decoration: none; }}
-            input[type="text"] {{ padding: 5px; font-size: 14px; width: 60%; }}
-            button {{ padding: 5px 10px; font-size: 14px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }}
-        </style>
-    </head>
+    <html>
+    <head><meta charset="utf-8"><title>Админка</title></head>
     <body>
-        <div class="container">
-            <h2>🔐 Админка (модерация)</h2>
-            <p>📍 — местоположение по IP | 💾 — скачать фото | 📨 — ответить публично</p>
-            {ideas_html}
-            <a href="/">← Назад</a>
-        </div>
+        <h2>Админка — удаление</h2>
+        {content}
+        <a href="/">← Назад</a>
     </body>
     </html>
     '''
-
-# --- Остальной HTML (privacy, instructions) — без изменений ---
-# (для краткости опущен, но в полной версии он есть)
-
-def get_privacy_html():
-    return '''...'''  # как в предыдущей версии
-
-def get_instructions_html():
-    return '''...'''  # как в предыдущей версии
 
 # --- Роуты ---
 @app.route('/')
 def index():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    ideas = [dict(row) for row in conn.execute("SELECT id, text, votes, image_data, reply FROM ideas ORDER BY votes DESC, created_at DESC")]
+    ideas = conn.execute("SELECT id, text, votes, image_data FROM ideas ORDER BY votes DESC, created_at DESC").fetchall()
+    ideas_with_replies = []
+    for idea in ideas:
+        replies = conn.execute("SELECT text FROM replies WHERE idea_id = ? ORDER BY created_at ASC", (idea["id"],)).fetchall()
+        ideas_with_replies.append({
+            "id": idea["id"],
+            "text": idea["text"],
+            "votes": idea["votes"],
+            "image_data": idea["image_data"],
+            "replies": [dict(r) for r in replies]
+        })
     conn.close()
-    return get_index_html(ideas)
+    return get_index_html(ideas_with_replies)
 
 @app.route('/add', methods=['POST'])
 def add_idea():
     text = request.form.get('text', '').strip()
     if not text or len(text) > 200 or contains_bad_words(text):
         return redirect('/')
-    
     user_ip = get_real_ip()
     image_data = process_image(request.files.get('image'))
-    
     conn = sqlite3.connect(DB_PATH)
     conn.execute("INSERT INTO ideas (text, ip, image_data) VALUES (?, ?, ?)", (text, user_ip, image_data))
+    conn.commit()
+    conn.close()
+    return redirect('/')
+
+@app.route('/reply', methods=['POST'])
+def add_reply():
+    text = request.form.get('text', '').strip()
+    idea_id = request.form.get('idea_id')
+    if not text or len(text) > 150 or contains_bad_words(text) or not idea_id:
+        return redirect('/')
+    user_ip = get_real_ip()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO replies (idea_id, text, ip) VALUES (?, ?, ?)", (idea_id, text, user_ip))
     conn.commit()
     conn.close()
     return redirect('/')
@@ -297,58 +278,29 @@ def vote(idea_id):
     conn.close()
     return redirect('/')
 
-@app.route('/admin', methods=['GET', 'POST'])
+# --- Админка: только удаление ---
+@app.route('/admin')
 def admin_panel():
-    password = request.args.get('password') or request.form.get('password')
+    password = request.args.get('password')
     if password != ADMIN_PASSWORD:
         return redirect('/')
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    ideas = [dict(row) for row in conn.execute("SELECT * FROM ideas ORDER BY created_at DESC")]
+    ideas = conn.execute("SELECT * FROM ideas ORDER BY created_at DESC").fetchall()
     conn.close()
-    return get_admin_html(ideas, password)
+    return get_admin_html([dict(i) for i in ideas], password)
 
-@app.route('/admin/reply', methods=['POST'])
-def admin_reply():
-    password = request.form.get('password')
-    if password != ADMIN_PASSWORD:
-        return redirect('/')
-    idea_id = request.form.get('idea_id')
-    reply = request.form.get('reply', '').strip()
-    if len(reply) > 200:
-        reply = reply[:200]
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE ideas SET reply = ? WHERE id = ?", (reply, idea_id))
-    conn.commit()
-    conn.close()
-    return redirect(f'/admin?password={password}')
-
-@app.route('/admin/delete/<int:idea_id>')
+@app.route('/admin/delete/idea/<int:idea_id>')
 def delete_idea(idea_id):
     password = request.args.get('password')
     if password != ADMIN_PASSWORD:
         return redirect('/')
     conn = sqlite3.connect(DB_PATH)
     conn.execute("DELETE FROM ideas WHERE id = ?", (idea_id,))
-    conn.execute("DELETE FROM votes WHERE idea_id = ?", (idea_id,))
+    # Ответы удалятся автоматически благодаря ON DELETE CASCADE
     conn.commit()
     conn.close()
     return redirect(f'/admin?password={password}')
-
-@app.route('/download/<int:idea_id>')
-def download_image_route(idea_id):
-    return download_image(idea_id)
-
-@app.route('/privacy')
-def privacy():
-    return get_privacy_html()
-
-@app.route('/admin/instructions')
-def admin_instructions():
-    password = request.args.get('password')
-    if password != ADMIN_PASSWORD:
-        return redirect('/')
-    return get_instructions_html()
 
 # --- Запуск ---
 if __name__ == '__main__':
