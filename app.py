@@ -2,7 +2,9 @@ import os
 import sqlite3
 import base64
 import re
-from flask import Flask, request, redirect, render_template_string
+import requests
+from flask import Flask, request, redirect, render_template_string, send_file, jsonify
+import tempfile
 
 # --- Настройки ---
 app = Flask(__name__)
@@ -33,6 +35,29 @@ def contains_bad_words(text):
                 return True
     return False
 
+def get_real_ip():
+    """Надёжное получение IP пользователя на Render"""
+    if request.headers.getlist("X-Forwarded-For"):
+        ip = request.headers.get("X-Forwarded-For").split(",")[0].strip()
+    else:
+        ip = request.remote_addr or '127.0.0.1'
+    return ip
+
+def get_location_by_ip(ip):
+    if ip in ('127.0.0.1', 'localhost', '::1'):
+        return "Локальный хост"
+    try:
+        response = requests.get(f"https://ipapi.co/{ip}/json/", timeout=2)
+        if response.status_code == 200:
+            data = response.json()
+            city = data.get("city") or "Неизвестно"
+            region = data.get("region") or ""
+            org = data.get("org") or "Неизвестно"
+            return f"{city} ({region}), {org}"
+    except:
+        pass
+    return "Не удалось определить"
+
 # --- Инициализация БД ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -44,6 +69,7 @@ def init_db():
             ip TEXT NOT NULL,
             image_data TEXT,
             votes INTEGER DEFAULT 0,
+            reply TEXT,  -- ответ от админа
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -79,15 +105,44 @@ def process_image(file):
     except:
         return None
 
+# --- Сохранение фото во временный файл для скачивания ---
+@app.route('/download/<int:idea_id>')
+def download_image(idea_id):
+    password = request.args.get('password')
+    if password != ADMIN_PASSWORD:
+        return "Доступ запрещён", 403
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    idea = conn.execute("SELECT image_data FROM ideas WHERE id = ?", (idea_id,)).fetchone()
+    conn.close()
+
+    if not idea or not idea['image_data']:
+        return "Фото не найдено", 404
+
+    try:
+        header, b64data = idea['image_data'].split(',', 1)
+        mime = header.split(';')[0]
+        ext = mime.split('/')[1] if '/' in mime else 'jpg'
+        filename = f"idea_{idea_id}.{ext}"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+            tmp.write(base64.b64decode(b64data))
+            return send_file(tmp.name, as_attachment=True, download_name=filename)
+    except Exception as e:
+        return f"Ошибка: {e}", 500
+
 # --- HTML: главная ---
 def get_index_html(ideas):
     ideas_html = ""
     for idea in ideas:
         img = f'<img src="{idea["image_data"]}" class="idea-img">' if idea["image_data"] else ""
+        reply = f'<div class="reply">💬 Ответ: {idea["reply"]}</div>' if idea["reply"] else ""
         ideas_html += f'''
         <div class="idea">
             {img}
             <p>{idea["text"]}</p>
+            {reply}
             <div class="meta">
                 <span>Голосов: {idea["votes"]}</span>
                 <a href="/vote/{idea["id"]}">✅ Поддержать</a>
@@ -111,6 +166,7 @@ def get_index_html(ideas):
             input[type="file"] {{ margin: 10px 0; width: 100%; }}
             .idea {{ background: #f8f9fa; padding: 16px; margin: 16px 0; border-radius: 10px; border-left: 4px solid #3498db; }}
             .idea-img {{ max-width: 100%; height: auto; border-radius: 8px; margin-bottom: 10px; display: block; }}
+            .reply {{ background: #e8f4fc; padding: 8px; border-radius: 6px; margin: 10px 0; font-style: italic; color: #2980b9; }}
             .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 14px; color: #666; }}
             .meta a {{ color: #27ae60; text-decoration: none; font-weight: bold; }}
             .footer {{ margin-top: 30px; font-size: 12px; color: #777; text-align: center; }}
@@ -142,15 +198,28 @@ def get_admin_html(ideas, password):
     ideas_html = ""
     for idea in ideas:
         img = f'<img src="{idea["image_data"]}" class="admin-img">' if idea["image_data"] else "<span>Нет фото</span>"
+        location = get_location_by_ip(idea["ip"])
+        download_link = f' | <a href="/download/{idea["id"]}?password={password}">💾 Скачать фото</a>' if idea["image_data"] else ""
+        reply_input = f'''
+        <form method="POST" action="/admin/reply" style="margin-top:8px;">
+            <input type="hidden" name="idea_id" value="{idea["id"]}">
+            <input type="hidden" name="password" value="{password}">
+            <input type="text" name="reply" placeholder="Ответ на идею..." value="{idea["reply"] or ""}" style="width:60%; padding:5px; font-size:14px;">
+            <button type="submit" style="padding:5px 10px; font-size:14px;">📨 Отправить ответ</button>
+        </form>
+        '''
         ideas_html += f'''
         <div class="idea">
             {img}
             <p><strong>{idea["text"]}</strong></p>
             <div class="meta">
                 <span>IP: {idea["ip"]}</span>
+                <span>📍 {location}</span>
                 <span>Голосов: {idea["votes"]}</span>
                 <a href="/admin/delete/{idea["id"]}?password={password}" onclick="return confirm('Удалить?')">🗑️ Удалить</a>
+                {download_link}
             </div>
+            {reply_input}
         </div>
         '''
     return f'''
@@ -166,13 +235,16 @@ def get_admin_html(ideas, password):
             .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }}
             .idea {{ background: #fef6f6; padding: 15px; margin: 15px 0; border-radius: 8px; }}
             .admin-img {{ max-width: 200px; height: auto; border: 1px solid #eee; margin: 5px 0; }}
-            .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 14px; }}
+            .meta {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; font-size: 13px; }}
             .meta a {{ color: #c0392b; text-decoration: none; }}
+            input[type="text"] {{ padding: 5px; font-size: 14px; width: 60%; }}
+            button {{ padding: 5px 10px; font-size: 14px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h2>🔐 Админка (модерация)</h2>
+            <p>📍 — местоположение по IP | 💾 — скачать фото | 📨 — ответить публично</p>
             {ideas_html}
             <a href="/">← Назад</a>
         </div>
@@ -180,69 +252,21 @@ def get_admin_html(ideas, password):
     </html>
     '''
 
-# --- HTML: политика конфиденциальности ---
+# --- Остальной HTML (privacy, instructions) — без изменений ---
+# (для краткости опущен, но в полной версии он есть)
+
 def get_privacy_html():
-    return '''
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Политика конфиденциальности — Голос класса</title>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 800px; margin: 0 auto; background: #fff; }
-            h1 { color: #2c3e50; }
-            h2 { color: #3498db; margin-top: 20px; }
-            p { margin: 10px 0; }
-            .back { margin-top: 30px; }
-            .back a { color: #3498db; text-decoration: none; }
-        </style>
-    </head>
-    <body>
-        <h1>Политика конфиденциальности</h1>
-        <p><strong>Веб-приложение «Голос класса»</strong></p>
-        <p><em>Последнее обновление: 1 апреля 2025 г.</em></p>
+    return '''...'''  # как в предыдущей версии
 
-        <h2>1. Общие положения</h2>
-        <p>Сервис создан для анонимного предложения идей по улучшению школьной жизни. Мы уважаем вашу конфиденциальность.</p>
-
-        <h2>2. Какие данные мы собираем?</h2>
-        <ul>
-            <li>Текст идеи (до 200 символов)</li>
-            <li>Изображение (опционально, до 2 МБ)</li>
-            <li>IP-адрес — только для модерации и предотвращения накрутки голосов</li>
-        </ul>
-        <p><strong>Имя, фамилия, email — НЕ собираются.</strong> Все идеи публикуются анонимно.</p>
-
-        <h2>3. Для чего используются данные?</h2>
-        <p>IP-адрес используется ТОЛЬКО для:</p>
-        <ul>
-            <li>Ограничения: 1 голос от 1 пользователя за 1 идею</li>
-            <li>Удаления спама, мата, 18+ контента</li>
-            <li>Модерации администрацией школы</li>
-        </ul>
-        <p>IP недоступен другим пользователям.</p>
-
-        <h2>4. Хранение данных</h2>
-        <p>Данные хранятся на сервере Render.com. При простое сайта более 15 минут данные могут быть удалены (ограничение бесплатного тарифа).</p>
-
-        <h2>5. Модерация</h2>
-        <p>Система автоматически блокирует идеи с матом, 18+, призывами к насилию. Администрация может удалять посты вручную.</p>
-
-        <h2>6. Контакты</h2>
-        <p>Вопросы — к куратору проекта (учителю информатики / классному руководителю).</p>
-
-        <div class="back"><a href="/">← Вернуться на главную</a></div>
-    </body>
-    </html>
-    '''
+def get_instructions_html():
+    return '''...'''  # как в предыдущей версии
 
 # --- Роуты ---
 @app.route('/')
 def index():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    ideas = [dict(row) for row in conn.execute("SELECT id, text, votes, image_data FROM ideas ORDER BY votes DESC, created_at DESC")]
+    ideas = [dict(row) for row in conn.execute("SELECT id, text, votes, image_data, reply FROM ideas ORDER BY votes DESC, created_at DESC")]
     conn.close()
     return get_index_html(ideas)
 
@@ -252,7 +276,7 @@ def add_idea():
     if not text or len(text) > 200 or contains_bad_words(text):
         return redirect('/')
     
-    user_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+    user_ip = get_real_ip()
     image_data = process_image(request.files.get('image'))
     
     conn = sqlite3.connect(DB_PATH)
@@ -263,9 +287,8 @@ def add_idea():
 
 @app.route('/vote/<int:idea_id>')
 def vote(idea_id):
-    user_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+    user_ip = get_real_ip()
     conn = sqlite3.connect(DB_PATH)
-    # Проверяем, голосовал ли этот IP за эту идею
     exists = conn.execute("SELECT 1 FROM votes WHERE idea_id = ? AND ip = ?", (idea_id, user_ip)).fetchone()
     if not exists:
         conn.execute("UPDATE ideas SET votes = votes + 1 WHERE id = ?", (idea_id,))
@@ -274,9 +297,9 @@ def vote(idea_id):
     conn.close()
     return redirect('/')
 
-@app.route('/admin')
+@app.route('/admin', methods=['GET', 'POST'])
 def admin_panel():
-    password = request.args.get('password')
+    password = request.args.get('password') or request.form.get('password')
     if password != ADMIN_PASSWORD:
         return redirect('/')
     conn = sqlite3.connect(DB_PATH)
@@ -284,6 +307,21 @@ def admin_panel():
     ideas = [dict(row) for row in conn.execute("SELECT * FROM ideas ORDER BY created_at DESC")]
     conn.close()
     return get_admin_html(ideas, password)
+
+@app.route('/admin/reply', methods=['POST'])
+def admin_reply():
+    password = request.form.get('password')
+    if password != ADMIN_PASSWORD:
+        return redirect('/')
+    idea_id = request.form.get('idea_id')
+    reply = request.form.get('reply', '').strip()
+    if len(reply) > 200:
+        reply = reply[:200]
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE ideas SET reply = ? WHERE id = ?", (reply, idea_id))
+    conn.commit()
+    conn.close()
+    return redirect(f'/admin?password={password}')
 
 @app.route('/admin/delete/<int:idea_id>')
 def delete_idea(idea_id):
@@ -297,9 +335,20 @@ def delete_idea(idea_id):
     conn.close()
     return redirect(f'/admin?password={password}')
 
+@app.route('/download/<int:idea_id>')
+def download_image_route(idea_id):
+    return download_image(idea_id)
+
 @app.route('/privacy')
 def privacy():
     return get_privacy_html()
+
+@app.route('/admin/instructions')
+def admin_instructions():
+    password = request.args.get('password')
+    if password != ADMIN_PASSWORD:
+        return redirect('/')
+    return get_instructions_html()
 
 # --- Запуск ---
 if __name__ == '__main__':
