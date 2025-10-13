@@ -92,15 +92,14 @@ def process_media(file, is_video=False):
         return None
     filename = file.filename.lower()
     if is_video:
-        if not filename.endswith(('.mp4', '.webm', '.mov')):
+        if not filename.endswith(('.mp4', '.webm')):
             return None
         file.seek(0, os.SEEK_END)
         size = file.tell()
         file.seek(0)
         if size > MAX_VIDEO_SIZE:
             return None
-        mime = 'video/mp4' if filename.endswith('.mp4') else \
-               'video/webm' if filename.endswith('.webm') else 'video/quicktime'
+        mime = 'video/mp4' if filename.endswith('.mp4') else 'video/webm'
     else:
         ext = filename.split('.')[-1]
         if ext not in {'png', 'jpg', 'jpeg', 'gif', 'webp'}:
@@ -116,11 +115,11 @@ def process_media(file, is_video=False):
     try:
         data = file.read()
         b64 = base64.b64encode(data).decode('utf-8')
-        # ВАЖНО: добавляем префикс "data:"
         return f"{mime};base64,{b64}"
     except:
         return None
 
+# === Скачивание ===
 @app.route('/download/<int:idea_id>')
 def download_image(idea_id):
     conn = sqlite3.connect(DB_PATH)
@@ -130,8 +129,7 @@ def download_image(idea_id):
     if not idea or not idea['image_data']:
         abort(404)
     try:
-        full_data = idea['image_data']
-        header, b64data = full_data.split(',', 1)
+        header, b64data = idea['image_data'].split(',', 1)
         mime = header.split(';')[0]
         ext = mime.split('/')[1] if '/' in mime else 'jpg'
         filename = f"idea_{idea_id}.{ext}"
@@ -151,8 +149,7 @@ def download_video(idea_id):
     if not idea or not idea['video_data']:
         abort(404)
     try:
-        full_data = idea['video_data']
-        header, b64data = full_data.split(',', 1)
+        header, b64data = idea['video_data'].split(',', 1)
         mime = header.split(';')[0]
         ext = mime.split('/')[1] if '/' in mime else 'mp4'
         filename = f"idea_{idea_id}_video.{ext}"
@@ -163,6 +160,7 @@ def download_video(idea_id):
     except Exception:
         abort(400)
 
+# === Ошибки ===
 @app.errorhandler(404)
 def not_found(e):
     return render_template_string('''
@@ -191,6 +189,7 @@ def bad_request(e):
     </html>
     '''), 400
 
+# === Главная страница ===
 @app.route('/')
 def index():
     query = request.args.get('q', '').strip()
@@ -223,14 +222,15 @@ def index():
         theme = idea["custom_theme"] if idea["theme"] == "Другое" and idea["custom_theme"] else idea["theme"]
         media = ""
         if idea["video_data"]:
-            media = f'<video controls class="media-preview" src="{idea["video_data"]}"></video>'
+            media = f'<video controls playsinline class="media-preview" src="{idea["video_data"]}"></video>'
         elif idea["image_data"]:
             media = f'<img src="{idea["image_data"]}" class="media-preview">'
         poll = ""
         if idea["poll_options"]:
             try:
                 options = json.loads(idea["poll_options"])
-                poll = f'<div class="poll-preview">📊 Опрос: {len(options)} вариантов</div>'
+                if isinstance(options, list) and len(options) >= 2:
+                    poll = f'<div class="poll-preview">📊 Опрос: {len(options)} вариантов</div>'
             except:
                 pass
         ideas_html += f'''
@@ -317,10 +317,10 @@ def index():
                 </div>
                 
                 <input type="file" name="image" accept="image/*" style="display:none;" id="imageInput">
-                <input type="file" name="video" accept="video/*" style="display:none;" id="videoInput">
+                <input type="file" name="video" accept="video/mp4,video/webm" style="display:none;" id="videoInput">
                 <div style="display:flex; gap:10px; margin:10px 0;">
                     <button type="button" onclick="document.getElementById('imageInput').click()">📷 Фото</button>
-                    <button type="button" onclick="document.getElementById('videoInput').click()">🎥 Видео</button>
+                    <button type="button" onclick="document.getElementById('videoInput').click()">🎥 Видео (MP4/WebM)</button>
                 </div>
                 
                 <button type="submit">➕ Добавить идею</button>
@@ -340,20 +340,17 @@ def index():
                 document.getElementById('pollOptions').style.display = this.checked ? 'block' : 'none';
             }});
             document.getElementById('imageInput').addEventListener('change', function(e) {{
-                if (e.target.files.length > 0) {{
-                    document.getElementById('videoInput').value = '';
-                }}
+                if (e.target.files.length > 0) document.getElementById('videoInput').value = '';
             }});
             document.getElementById('videoInput').addEventListener('change', function(e) {{
-                if (e.target.files.length > 0) {{
-                    document.getElementById('imageInput').value = '';
-                }}
+                if (e.target.files.length > 0) document.getElementById('imageInput').value = '';
             }});
         </script>
     </body>
     </html>
     ''')
 
+# === Страница идеи ===
 @app.route('/ideas/<int:idea_id>')
 def idea_detail(idea_id):
     conn = sqlite3.connect(DB_PATH)
@@ -363,17 +360,39 @@ def idea_detail(idea_id):
         abort(404)
     replies = conn.execute("SELECT text FROM replies WHERE idea_id = ? ORDER BY created_at ASC", (idea_id,)).fetchall()
     
-    poll_results = {}
+    poll_html = ""
     if idea["poll_options"]:
         try:
             options = json.loads(idea["poll_options"])
-            total_votes = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ?", (idea_id,)).fetchone()[0]
-            for i, opt in enumerate(options):
-                count = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ? AND option_index = ?", (idea_id, i)).fetchone()[0]
-                percent = round(count / total_votes * 100) if total_votes > 0 else 0
-                poll_results[i] = {"text": opt, "count": count, "percent": percent}
-        except:
-            pass
+            if isinstance(options, list) and len(options) >= 2:
+                total_votes = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ?", (idea_id,)).fetchone()[0]
+                has_voted = conn.execute("SELECT 1 FROM poll_votes WHERE idea_id = ? AND ip = ?", (idea_id, get_real_ip())).fetchone()
+                if has_voted:
+                    # Показываем результаты
+                    poll_html = '<div class="poll-results"><h3>Результаты опроса:</h3>'
+                    for i, opt in enumerate(options):
+                        if not isinstance(opt, str): continue
+                        opt = opt.strip()
+                        if not opt: continue
+                        count = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ? AND option_index = ?", (idea_id, i)).fetchone()[0]
+                        percent = round(count / total_votes * 100) if total_votes > 0 else 0
+                        poll_html += f'''
+                        <div class="poll-bar">
+                            <strong>{opt}</strong> — {count} ({percent}%)
+                            <div style="height:10px; background:#3498db; width:{percent}%"></div>
+                        </div>
+                        '''
+                    poll_html += '</div>'
+                else:
+                    # Показываем форму для голосования
+                    poll_html = '<div class="poll-vote"><h3>Проголосуйте:</h3><form method="POST" action="/poll/vote">'
+                    poll_html += f'<input type="hidden" name="idea_id" value="{idea_id}">'
+                    for i, opt in enumerate(options):
+                        if isinstance(opt, str) and opt.strip():
+                            poll_html += f'<label><input type="radio" name="option" value="{i}" required> {opt.strip()}</label><br>'
+                    poll_html += '<button type="submit">🗳️ Проголосовать</button></form></div>'
+        except (json.JSONDecodeError, TypeError, ValueError):
+            poll_html = ""
     
     conn.close()
     
@@ -381,36 +400,13 @@ def idea_detail(idea_id):
     media = ""
     download_btn = ""
     if idea["video_data"]:
-        media = f'<video controls class="media-preview" src="{idea["video_data"]}"></video>'
+        media = f'<video controls playsinline class="media-preview" src="{idea["video_data"]}"></video>'
         download_btn = f'<a href="/download/video/{idea_id}" class="download-btn">💾 Скачать видео</a>'
     elif idea["image_data"]:
         media = f'<img src="{idea["image_data"]}" class="media-preview">'
         download_btn = f'<a href="/download/{idea_id}" class="download-btn">💾 Скачать фото</a>'
     
     replies_html = "".join(f'<div class="reply">{r["text"]}</div>' for r in replies)
-    
-    poll_html = ""
-    if idea["poll_options"] and poll_results:
-        poll_html = '<div class="poll-results"><h3>Результаты опроса:</h3>'
-        for i, res in poll_results.items():
-            poll_html += f'''
-            <div class="poll-bar">
-                <strong>{res["text"]}</strong> — {res["count"]} ({res["percent"]}%)
-                <div style="height:10px; background:#3498db; width:{res["percent"]}%"></div>
-            </div>
-            '''
-        poll_html += '</div>'
-    elif idea["poll_options"]:
-        try:
-            options = json.loads(idea["poll_options"])
-            poll_html = '<div class="poll-vote"><h3>Проголосуйте:</h3><form method="POST" action="/poll/vote">'
-            poll_html += f'<input type="hidden" name="idea_id" value="{idea_id}">'
-            for i, opt in enumerate(options):
-                if opt.strip():
-                    poll_html += f'<label><input type="radio" name="option" value="{i}" required> {opt}</label><br>'
-            poll_html += '<button type="submit">🗳️ Проголосовать</button></form></div>'
-        except:
-            poll_html = ""
     
     return render_template_string(f'''
     <!DOCTYPE html>
@@ -456,6 +452,7 @@ def idea_detail(idea_id):
     </html>
     ''')
 
+# === Добавление идеи ===
 @app.route('/add', methods=['POST'])
 def add_idea():
     text = request.form.get('text', '').strip()
@@ -488,6 +485,7 @@ def add_idea():
     conn.close()
     return redirect('/')
 
+# === Голосование в опросе ===
 @app.route('/poll/vote', methods=['POST'])
 def poll_vote():
     idea_id = request.form.get('idea_id')
@@ -507,6 +505,7 @@ def poll_vote():
     conn.close()
     return redirect(f'/ideas/{idea_id}')
 
+# === Ответы ===
 @app.route('/reply', methods=['POST'])
 def add_reply():
     text = request.form.get('text', '').strip()
@@ -520,6 +519,7 @@ def add_reply():
     conn.close()
     return redirect(f'/ideas/{idea_id}')
 
+# === Голосование за идею ===
 @app.route('/vote/<int:idea_id>')
 def vote(idea_id):
     user_ip = get_real_ip()
@@ -532,7 +532,7 @@ def vote(idea_id):
     conn.close()
     return redirect('/')
 
-# Админка
+# === Админка ===
 @app.route('/admin')
 def admin_panel():
     password = request.args.get('password')
@@ -570,6 +570,7 @@ def delete_idea(idea_id):
     conn.close()
     return redirect(f'/admin?password={password}')
 
+# === Запуск ===
 if __name__ == '__main__':
     init_db()
     port = int(os.environ.get('PORT', 10000))
