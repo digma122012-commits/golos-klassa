@@ -2,7 +2,6 @@ import os
 import sqlite3
 import base64
 import re
-import json
 from flask import Flask, request, redirect, render_template_string, send_file, abort
 
 app = Flask(__name__)
@@ -10,18 +9,23 @@ app.secret_key = os.environ.get("SECRET_KEY", "render-secret-key")
 
 DB_PATH = 'ideas.db'
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "school123")
-MAX_IMAGE_SIZE = 2 * 1024 * 1024    # 2 MB
-MAX_VIDEO_SIZE = 10 * 1024 * 1024   # 10 MB
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 THEMES = ["Школа", "Мероприятия", "Питание", "Спорт", "Учёба", "Другое"]
 
+# Расширенный список запрещённых слов
 BAD_WORDS = {
+    # Мат и грубость
     'бля', 'бляд', 'еб', 'ёб', 'хуй', 'пизд', 'сука', 'суч', 'нахуй', 'нахер', 'охуел', 'охуев', 'ахуеть',
     'гандон', 'говно', 'дроч', 'ебал', 'ебан', 'ебаш', 'залуп', 'мудил', 'мудоз', 'пидор', 'педик', 'пидар',
-    'срать', 'ссать', 'трах', 'чмо', 'шлюх', 'шалав', 'урод', 'скотина', 'мерзавец', 'гад', 'сволочь',
-    'порно', 'секс', 'интим', 'эротик', 'голый', 'обнаж', 'нюд', 'nude', 'porn', 'xxx', 'sex', 'boobs', 'dick',
-    'жестоко', 'убить', 'смерть', 'повеситься', 'суицид', 'наркотик', 'марихуан', 'амфетамин', 'кокаин',
-    'оружие', 'бомба', 'взорвать', 'террор', 'кровь', 'резать', 'нож', 'пистолет', 'насиль', 'изнасил'
+    'срать', 'ссать', 'трах', 'чмо', 'шлюх', 'шалав', 'урод', 'скотина', 'мерзавец', 'гад', 'сволочь', 'мразь',
+    'лох', 'лошара', 'тварь', 'животное', 'идиот', 'дурак', 'придурок', 'кретин', 'мудак', 'уродина',
+    # 18+ и опасный контент
+    'порно', 'секс', 'интим', 'эротик', 'голый', 'обнаж', 'нюд', 'nude', 'porn', 'xxx', 'sex', 'boobs', 'dick', 'pussy',
+    'жестоко', 'убить', 'смерть', 'повеситься', 'суицид', 'наркотик', 'марихуан', 'амфетамин', 'кокаин', 'героин',
+    'оружие', 'бомба', 'взорвать', 'террор', 'кровь', 'резать', 'нож', 'пистолет', 'насиль', 'изнасил', 'драка',
+    # Троллинг и спам
+    'бот', 'спам', 'лох', 'дурачок', 'тупой', 'нищеброд', 'засранец', 'флуд', 'тролль', 'хейт', 'бред', 'чушь'
 }
 
 def contains_bad_words(text):
@@ -51,10 +55,10 @@ def init_db():
             text TEXT NOT NULL,
             theme TEXT NOT NULL,
             custom_theme TEXT,
-            poll_options TEXT,
+            file_data TEXT,
+            file_name TEXT,
+            file_mime TEXT,
             ip TEXT NOT NULL,
-            image_data TEXT,
-            video_data TEXT,
             votes INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -63,14 +67,6 @@ def init_db():
         CREATE TABLE IF NOT EXISTS votes (
             idea_id INTEGER,
             ip TEXT,
-            PRIMARY KEY (idea_id, ip)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS poll_votes (
-            idea_id INTEGER,
-            ip TEXT,
-            option_index INTEGER,
             PRIMARY KEY (idea_id, ip)
         )
     ''')
@@ -87,80 +83,51 @@ def init_db():
     conn.commit()
     conn.close()
 
-def process_media(file, is_video=False):
+def process_file(file):
     if not file or not file.filename:
-        return None
-    filename = file.filename.lower()
-    if is_video:
-        if not filename.endswith(('.mp4', '.webm')):
-            return None
-        file.seek(0, os.SEEK_END)
-        size = file.tell()
-        file.seek(0)
-        if size > MAX_VIDEO_SIZE:
-            return None
-        mime = 'video/mp4' if filename.endswith('.mp4') else 'video/webm'
-    else:
-        ext = filename.split('.')[-1]
-        if ext not in {'png', 'jpg', 'jpeg', 'gif', 'webp'}:
-            return None
-        file.seek(0, os.SEEK_END)
-        size = file.tell()
-        file.seek(0)
-        if size > MAX_IMAGE_SIZE:
-            return None
-        mime = 'image/jpeg' if ext in {'jpg', 'jpeg'} else \
-               'image/png' if ext == 'png' else \
-               'image/gif' if ext == 'gif' else 'image/webp'
+        return None, None, None
+    filename = file.filename
+    file.seek(0, os.SEEK_END)
+    size = file.tell()
+    file.seek(0)
+    if size > MAX_FILE_SIZE:
+        return None, None, None
     try:
         data = file.read()
         b64 = base64.b64encode(data).decode('utf-8')
-        return f"{mime};base64,{b64}"
+        # Определяем MIME по расширению
+        ext = filename.lower().split('.')[-1]
+        mime_map = {
+            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif', 'webp': 'image/webp',
+            'mp4': 'video/mp4', 'webm': 'video/webm', 'mov': 'video/quicktime',
+            'pdf': 'application/pdf',
+            'doc': 'application/msword', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'txt': 'text/plain',
+            'zip': 'application/zip'
+        }
+        mime = mime_map.get(ext, 'application/octet-stream')
+        return f"{mime};base64,{b64}", filename, mime
     except:
-        return None
+        return None, None, None
 
-# === Скачивание ===
 @app.route('/download/<int:idea_id>')
-def download_image(idea_id):
+def download_file(idea_id):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    idea = conn.execute("SELECT image_data FROM ideas WHERE id = ?", (idea_id,)).fetchone()
+    idea = conn.execute("SELECT file_data, file_name FROM ideas WHERE id = ?", (idea_id,)).fetchone()
     conn.close()
-    if not idea or not idea['image_data']:
+    if not idea or not idea['file_data']:
         abort(404)
     try:
-        header, b64data = idea['image_data'].split(',', 1)
-        mime = header.split(';')[0]
-        ext = mime.split('/')[1] if '/' in mime else 'jpg'
-        filename = f"idea_{idea_id}.{ext}"
+        header, b64data = idea['file_data'].split(',', 1)
+        filename = idea['file_name'] or f"file_{idea_id}"
         import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(base64.b64decode(b64data))
             return send_file(tmp.name, as_attachment=True, download_name=filename)
     except Exception:
         abort(400)
 
-@app.route('/download/video/<int:idea_id>')
-def download_video(idea_id):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    idea = conn.execute("SELECT video_data FROM ideas WHERE id = ?", (idea_id,)).fetchone()
-    conn.close()
-    if not idea or not idea['video_data']:
-        abort(404)
-    try:
-        header, b64data = idea['video_data'].split(',', 1)
-        mime = header.split(';')[0]
-        ext = mime.split('/')[1] if '/' in mime else 'mp4'
-        filename = f"idea_{idea_id}_video.{ext}"
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-            tmp.write(base64.b64decode(b64data))
-            return send_file(tmp.name, as_attachment=True, download_name=filename)
-    except Exception:
-        abort(400)
-
-# === Ошибки ===
 @app.errorhandler(404)
 def not_found(e):
     return render_template_string('''
@@ -189,7 +156,6 @@ def bad_request(e):
     </html>
     '''), 400
 
-# === Главная страница ===
 @app.route('/')
 def index():
     query = request.args.get('q', '').strip()
@@ -198,19 +164,16 @@ def index():
     
     if query:
         sql = """
-            SELECT id, text, theme, custom_theme, votes, image_data, video_data, poll_options 
+            SELECT id, text, theme, custom_theme, votes, file_mime 
             FROM ideas 
-            WHERE 
-                text LIKE ? 
-                OR theme LIKE ?
-                OR custom_theme LIKE ?
+            WHERE text LIKE ? OR theme LIKE ? OR custom_theme LIKE ?
             ORDER BY votes DESC, created_at DESC
         """
         like_term = f"%{query}%"
         ideas = conn.execute(sql, (like_term, like_term, like_term)).fetchall()
     else:
         ideas = conn.execute("""
-            SELECT id, text, theme, custom_theme, votes, image_data, video_data, poll_options 
+            SELECT id, text, theme, custom_theme, votes, file_mime 
             FROM ideas 
             ORDER BY votes DESC, created_at DESC
         """).fetchall()
@@ -221,24 +184,28 @@ def index():
     for idea in ideas:
         theme = idea["custom_theme"] if idea["theme"] == "Другое" and idea["custom_theme"] else idea["theme"]
         media = ""
-        if idea["video_data"]:
-            media = f'<video controls playsinline class="media-preview" src="{idea["video_data"]}"></video>'
-        elif idea["image_data"]:
-            media = f'<img src="{idea["image_data"]}" class="media-preview">'
-        poll = ""
-        if idea["poll_options"]:
-            try:
-                options = json.loads(idea["poll_options"])
-                if isinstance(options, list) and len(options) >= 2:
-                    poll = f'<div class="poll-preview">📊 Опрос: {len(options)} вариантов</div>'
-            except:
-                pass
+        if idea["file_mime"] and idea["file_mime"].startswith('image/'):
+            # Предпросмотр фото
+            conn2 = sqlite3.connect(DB_PATH)
+            conn2.row_factory = sqlite3.Row
+            file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
+            conn2.close()
+            if file_data and file_data["file_data"]:
+                media = f'<img src="{file_data["file_data"]}" class="media-preview">'
+        elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
+            # Предпросмотр видео
+            conn2 = sqlite3.connect(DB_PATH)
+            conn2.row_factory = sqlite3.Row
+            file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
+            conn2.close()
+            if file_data and file_data["file_data"]:
+                media = f'<video controls playsinline class="media-preview" src="{file_data["file_data"]}"></video>'
+        
         ideas_html += f'''
         <div class="idea-card">
             <div class="theme-badge">{theme}</div>
             {media}
             <h3>{idea["text"][:100]}{"..." if len(idea["text"]) > 100 else ""}</h3>
-            {poll}
             <div class="meta">
                 <span>Голосов: {idea["votes"]}</span>
                 <a href="/vote/{idea["id"]}">✅ Поддержать</a>
@@ -273,14 +240,11 @@ def index():
             .idea-card {{ background: #f8f9fa; padding: 16px; margin: 16px 0; border-radius: 10px; border-left: 4px solid #3498db; }}
             .theme-badge {{ display: inline-block; background: #3498db; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px; margin-bottom: 10px; }}
             .media-preview {{ max-width: 100%; height: auto; border-radius: 8px; margin: 10px 0; display: block; }}
-            .poll-preview {{ background: #e8f4fc; padding: 6px; border-radius: 4px; font-size: 14px; margin: 8px 0; }}
             .meta {{ display: flex; justify-content: space-between; margin-top: 10px; font-size: 14px; color: #666; }}
             .meta a {{ color: #3498db; text-decoration: none; font-weight: bold; }}
             form {{ margin: 20px 0; }}
             select, input[type="text"], textarea, button {{ width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }}
             button {{ background: #3498db; color: white; border: none; cursor: pointer; }}
-            .poll-option {{ display: flex; gap: 10px; margin-bottom: 8px; }}
-            .poll-option input {{ flex: 1; }}
         </style>
     </head>
     <body>
@@ -289,7 +253,7 @@ def index():
             
             {search_form}
             
-            <form method="POST" action="/add" enctype="multipart/form-data" id="ideaForm">
+            <form method="POST" action="/add" enctype="multipart/form-data">
                 <select name="theme" required onchange="toggleCustomTheme()">
                     <option value="">Выберите тему</option>
                     {''.join(f'<option value="{t}">{t}</option>' for t in THEMES)}
@@ -298,31 +262,7 @@ def index():
                 
                 <textarea name="text" placeholder="Ваша идея (до 200 символов)..." maxlength="200" required></textarea>
                 
-                <div id="pollSection">
-                    <label><input type="checkbox" id="addPoll"> Добавить опрос</label>
-                    <div id="pollOptions" style="display:none;">
-                        <div class="poll-option">
-                            <input type="text" name="poll_option_1" placeholder="Вариант 1">
-                        </div>
-                        <div class="poll-option">
-                            <input type="text" name="poll_option_2" placeholder="Вариант 2">
-                        </div>
-                        <div class="poll-option">
-                            <input type="text" name="poll_option_3" placeholder="Вариант 3 (опционально)">
-                        </div>
-                        <div class="poll-option">
-                            <input type="text" name="poll_option_4" placeholder="Вариант 4 (опционально)">
-                        </div>
-                    </div>
-                </div>
-                
-                <input type="file" name="image" accept="image/*" style="display:none;" id="imageInput">
-                <input type="file" name="video" accept="video/mp4,video/webm" style="display:none;" id="videoInput">
-                <div style="display:flex; gap:10px; margin:10px 0;">
-                    <button type="button" onclick="document.getElementById('imageInput').click()">📷 Фото</button>
-                    <button type="button" onclick="document.getElementById('videoInput').click()">🎥 Видео (MP4/WebM)</button>
-                </div>
-                
+                <input type="file" name="file" accept="*/*">
                 <button type="submit">➕ Добавить идею</button>
             </form>
             <hr>
@@ -336,21 +276,11 @@ def index():
                 custom.style.display = select.value === 'Другое' ? 'block' : 'none';
                 if (select.value !== 'Другое') custom.value = '';
             }}
-            document.getElementById('addPoll').addEventListener('change', function() {{
-                document.getElementById('pollOptions').style.display = this.checked ? 'block' : 'none';
-            }});
-            document.getElementById('imageInput').addEventListener('change', function(e) {{
-                if (e.target.files.length > 0) document.getElementById('videoInput').value = '';
-            }});
-            document.getElementById('videoInput').addEventListener('change', function(e) {{
-                if (e.target.files.length > 0) document.getElementById('imageInput').value = '';
-            }});
         </script>
     </body>
     </html>
     ''')
 
-# === Страница идеи ===
 @app.route('/ideas/<int:idea_id>')
 def idea_detail(idea_id):
     conn = sqlite3.connect(DB_PATH)
@@ -359,52 +289,16 @@ def idea_detail(idea_id):
     if not idea:
         abort(404)
     replies = conn.execute("SELECT text FROM replies WHERE idea_id = ? ORDER BY created_at ASC", (idea_id,)).fetchall()
-    
-    poll_html = ""
-    if idea["poll_options"]:
-        try:
-            options = json.loads(idea["poll_options"])
-            if isinstance(options, list) and len(options) >= 2:
-                total_votes = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ?", (idea_id,)).fetchone()[0]
-                has_voted = conn.execute("SELECT 1 FROM poll_votes WHERE idea_id = ? AND ip = ?", (idea_id, get_real_ip())).fetchone()
-                if has_voted:
-                    # Показываем результаты
-                    poll_html = '<div class="poll-results"><h3>Результаты опроса:</h3>'
-                    for i, opt in enumerate(options):
-                        if not isinstance(opt, str): continue
-                        opt = opt.strip()
-                        if not opt: continue
-                        count = conn.execute("SELECT COUNT(*) FROM poll_votes WHERE idea_id = ? AND option_index = ?", (idea_id, i)).fetchone()[0]
-                        percent = round(count / total_votes * 100) if total_votes > 0 else 0
-                        poll_html += f'''
-                        <div class="poll-bar">
-                            <strong>{opt}</strong> — {count} ({percent}%)
-                            <div style="height:10px; background:#3498db; width:{percent}%"></div>
-                        </div>
-                        '''
-                    poll_html += '</div>'
-                else:
-                    # Показываем форму для голосования
-                    poll_html = '<div class="poll-vote"><h3>Проголосуйте:</h3><form method="POST" action="/poll/vote">'
-                    poll_html += f'<input type="hidden" name="idea_id" value="{idea_id}">'
-                    for i, opt in enumerate(options):
-                        if isinstance(opt, str) and opt.strip():
-                            poll_html += f'<label><input type="radio" name="option" value="{i}" required> {opt.strip()}</label><br>'
-                    poll_html += '<button type="submit">🗳️ Проголосовать</button></form></div>'
-        except (json.JSONDecodeError, TypeError, ValueError):
-            poll_html = ""
-    
     conn.close()
     
     theme = idea["custom_theme"] if idea["theme"] == "Другое" and idea["custom_theme"] else idea["theme"]
     media = ""
-    download_btn = ""
-    if idea["video_data"]:
-        media = f'<video controls playsinline class="media-preview" src="{idea["video_data"]}"></video>'
-        download_btn = f'<a href="/download/video/{idea_id}" class="download-btn">💾 Скачать видео</a>'
-    elif idea["image_data"]:
-        media = f'<img src="{idea["image_data"]}" class="media-preview">'
-        download_btn = f'<a href="/download/{idea_id}" class="download-btn">💾 Скачать фото</a>'
+    download_btn = f'<a href="/download/{idea_id}" class="download-btn">💾 Скачать файл</a>'
+    
+    if idea["file_mime"] and idea["file_mime"].startswith('image/'):
+        media = f'<img src="{idea["file_data"]}" class="media-preview">'
+    elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
+        media = f'<video controls playsinline class="media-preview" src="{idea["file_data"]}"></video>'
     
     replies_html = "".join(f'<div class="reply">{r["text"]}</div>' for r in replies)
     
@@ -423,8 +317,6 @@ def idea_detail(idea_id):
             .media-preview {{ max-width: 100%; height: auto; border-radius: 8px; margin: 15px 0; display: block; }}
             .download-btn {{ color: #27ae60; text-decoration: none; font-weight: bold; }}
             .reply {{ background: #e8f4fc; padding: 10px; border-radius: 6px; margin: 8px 0; color: #2980b9; }}
-            .poll-bar, .poll-vote label {{ display: block; margin: 10px 0; }}
-            .poll-bar div {{ margin-top: 4px; }}
             form {{ margin-top: 20px; }}
             input[type="text"], button {{ padding: 10px; font-size: 16px; width: 100%; margin-top: 10px; }}
             button {{ background: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; }}
@@ -439,7 +331,6 @@ def idea_detail(idea_id):
             {media}
             {download_btn}
             <p><strong>Голосов за идею:</strong> {idea["votes"]}</p>
-            {poll_html}
             <h3>Ответы ({len(replies)})</h3>
             {replies_html}
             <form method="POST" action="/reply">
@@ -452,7 +343,6 @@ def idea_detail(idea_id):
     </html>
     ''')
 
-# === Добавление идеи ===
 @app.route('/add', methods=['POST'])
 def add_idea():
     text = request.form.get('text', '').strip()
@@ -463,49 +353,18 @@ def add_idea():
     if theme == "Другое" and (not custom_theme or len(custom_theme) > 50 or contains_bad_words(custom_theme)):
         abort(400)
     
-    poll_options = []
-    if request.form.get('addPoll'):
-        for i in range(1, 5):
-            opt = request.form.get(f'poll_option_{i}', '').strip()
-            if opt and not contains_bad_words(opt):
-                poll_options.append(opt)
-        if len(poll_options) < 2:
-            poll_options = []
-    
     user_ip = get_real_ip()
-    image_data = process_media(request.files.get('image'), is_video=False)
-    video_data = process_media(request.files.get('video'), is_video=True)
+    file_data, file_name, file_mime = process_file(request.files.get('file'))
     
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
-        INSERT INTO ideas (text, theme, custom_theme, poll_options, ip, image_data, video_data) 
+        INSERT INTO ideas (text, theme, custom_theme, file_data, file_name, file_mime, ip) 
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (text, theme, custom_theme, json.dumps(poll_options) if poll_options else None, user_ip, image_data, video_data))
+    """, (text, theme, custom_theme, file_data, file_name, file_mime, user_ip))
     conn.commit()
     conn.close()
     return redirect('/')
 
-# === Голосование в опросе ===
-@app.route('/poll/vote', methods=['POST'])
-def poll_vote():
-    idea_id = request.form.get('idea_id')
-    option = request.form.get('option')
-    if not idea_id or option is None:
-        abort(400)
-    try:
-        option_index = int(option)
-    except:
-        abort(400)
-    user_ip = get_real_ip()
-    conn = sqlite3.connect(DB_PATH)
-    exists = conn.execute("SELECT 1 FROM poll_votes WHERE idea_id = ? AND ip = ?", (idea_id, user_ip)).fetchone()
-    if not exists:
-        conn.execute("INSERT INTO poll_votes (idea_id, ip, option_index) VALUES (?, ?, ?)", (idea_id, user_ip, option_index))
-        conn.commit()
-    conn.close()
-    return redirect(f'/ideas/{idea_id}')
-
-# === Ответы ===
 @app.route('/reply', methods=['POST'])
 def add_reply():
     text = request.form.get('text', '').strip()
@@ -519,7 +378,6 @@ def add_reply():
     conn.close()
     return redirect(f'/ideas/{idea_id}')
 
-# === Голосование за идею ===
 @app.route('/vote/<int:idea_id>')
 def vote(idea_id):
     user_ip = get_real_ip()
@@ -532,7 +390,7 @@ def vote(idea_id):
     conn.close()
     return redirect('/')
 
-# === Админка ===
+# Админка
 @app.route('/admin')
 def admin_panel():
     password = request.args.get('password')
@@ -570,7 +428,6 @@ def delete_idea(idea_id):
     conn.close()
     return redirect(f'/admin?password={password}')
 
-# === Запуск ===
 if __name__ == '__main__':
     init_db()
     port = int(os.environ.get('PORT', 10000))
