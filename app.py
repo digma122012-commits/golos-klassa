@@ -83,7 +83,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def process_file(file):
+def process_file(file, is_image=False, is_video=False):
     if not file or not file.filename:
         return None, None, None
     filename = file.filename
@@ -95,17 +95,21 @@ def process_file(file):
     try:
         data = file.read()
         b64 = base64.b64encode(data).decode('utf-8')
-        # Определяем MIME по расширению
         ext = filename.lower().split('.')[-1]
-        mime_map = {
-            'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif', 'webp': 'image/webp',
-            'mp4': 'video/mp4', 'webm': 'video/webm', 'mov': 'video/quicktime',
-            'pdf': 'application/pdf',
-            'doc': 'application/msword', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'txt': 'text/plain',
-            'zip': 'application/zip'
-        }
-        mime = mime_map.get(ext, 'application/octet-stream')
+        if is_image:
+            mime = 'image/jpeg' if ext in {'jpg','jpeg'} else \
+                   'image/png' if ext == 'png' else \
+                   'image/gif' if ext == 'gif' else 'image/webp'
+        elif is_video:
+            mime = 'video/mp4' if ext == 'mp4' else 'video/webm'
+        else:
+            mime_map = {
+                'pdf': 'application/pdf',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'txt': 'text/plain',
+                'zip': 'application/zip'
+            }
+            mime = mime_map.get(ext, 'application/octet-stream')
         return f"{mime};base64,{b64}", filename, mime
     except:
         return None, None, None
@@ -185,7 +189,6 @@ def index():
         theme = idea["custom_theme"] if idea["theme"] == "Другое" and idea["custom_theme"] else idea["theme"]
         media = ""
         if idea["file_mime"] and idea["file_mime"].startswith('image/'):
-            # Предпросмотр фото
             conn2 = sqlite3.connect(DB_PATH)
             conn2.row_factory = sqlite3.Row
             file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
@@ -193,7 +196,6 @@ def index():
             if file_data and file_data["file_data"]:
                 media = f'<img src="{file_data["file_data"]}" class="media-preview">'
         elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
-            # Предпросмотр видео
             conn2 = sqlite3.connect(DB_PATH)
             conn2.row_factory = sqlite3.Row
             file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
@@ -250,6 +252,7 @@ def index():
     <body>
         <div class="container">
             <h1>🗣️ Голос класса</h1>
+            <p style="font-size:14px; color:#e74c3c;">⚠️ Файлы могут удаляться при простое сайта. Не загружайте важные документы!</p>
             
             {search_form}
             
@@ -262,7 +265,16 @@ def index():
                 
                 <textarea name="text" placeholder="Ваша идея (до 200 символов)..." maxlength="200" required></textarea>
                 
-                <input type="file" name="file" accept="*/*">
+                <input type="file" name="image" accept="image/*" style="display:none;" id="imageInput">
+                <input type="file" name="video" accept="video/mp4,video/webm" style="display:none;" id="videoInput">
+                <input type="file" name="file" accept="*/*" style="display:none;" id="fileInput">
+                
+                <div style="display:flex; flex-wrap:wrap; gap:8px; margin:12px 0;">
+                    <button type="button" onclick="document.getElementById('imageInput').click()">📷 Фото</button>
+                    <button type="button" onclick="document.getElementById('videoInput').click()">🎥 Видео</button>
+                    <button type="button" onclick="document.getElementById('fileInput').click()">📎 Любой файл</button>
+                </div>
+                
                 <button type="submit">➕ Добавить идею</button>
             </form>
             <hr>
@@ -276,6 +288,24 @@ def index():
                 custom.style.display = select.value === 'Другое' ? 'block' : 'none';
                 if (select.value !== 'Другое') custom.value = '';
             }}
+            document.getElementById('imageInput').addEventListener('change', function(e) {{
+                if (e.target.files.length > 0) {{
+                    document.getElementById('videoInput').value = '';
+                    document.getElementById('fileInput').value = '';
+                }}
+            }});
+            document.getElementById('videoInput').addEventListener('change', function(e) {{
+                if (e.target.files.length > 0) {{
+                    document.getElementById('imageInput').value = '';
+                    document.getElementById('fileInput').value = '';
+                }}
+            }});
+            document.getElementById('fileInput').addEventListener('change', function(e) {{
+                if (e.target.files.length > 0) {{
+                    document.getElementById('imageInput').value = '';
+                    document.getElementById('videoInput').value = '';
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -354,8 +384,15 @@ def add_idea():
         abort(400)
     
     user_ip = get_real_ip()
-    file_data, file_name, file_mime = process_file(request.files.get('file'))
-    
+    file_data, file_name, file_mime = None, None, None
+
+    if 'image' in request.files and request.files['image'].filename:
+        file_data, file_name, file_mime = process_file(request.files['image'], is_image=True)
+    elif 'video' in request.files and request.files['video'].filename:
+        file_data, file_name, file_mime = process_file(request.files['video'], is_video=True)
+    elif 'file' in request.files and request.files['file'].filename:
+        file_data, file_name, file_mime = process_file(request.files['file'])
+
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT INTO ideas (text, theme, custom_theme, file_data, file_name, file_mime, ip) 
