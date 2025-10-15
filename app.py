@@ -13,18 +13,14 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 THEMES = ["Школа", "Мероприятия", "Питание", "Спорт", "Учёба", "Другое"]
 
-# Расширенный список запрещённых слов
 BAD_WORDS = {
-    # Мат и грубость
     'бля', 'бляд', 'еб', 'ёб', 'хуй', 'пизд', 'сука', 'суч', 'нахуй', 'нахер', 'охуел', 'охуев', 'ахуеть',
     'гандон', 'говно', 'дроч', 'ебал', 'ебан', 'ебаш', 'залуп', 'мудил', 'мудоз', 'пидор', 'педик', 'пидар',
     'срать', 'ссать', 'трах', 'чмо', 'шлюх', 'шалав', 'урод', 'скотина', 'мерзавец', 'гад', 'сволочь', 'мразь',
     'лох', 'лошара', 'тварь', 'животное', 'идиот', 'дурак', 'придурок', 'кретин', 'мудак', 'уродина',
-    # 18+ и опасный контент
     'порно', 'секс', 'интим', 'эротик', 'голый', 'обнаж', 'нюд', 'nude', 'porn', 'xxx', 'sex', 'boobs', 'dick', 'pussy',
     'жестоко', 'убить', 'смерть', 'повеситься', 'суицид', 'наркотик', 'марихуан', 'амфетамин', 'кокаин', 'героин',
     'оружие', 'бомба', 'взорвать', 'террор', 'кровь', 'резать', 'нож', 'пистолет', 'насиль', 'изнасил', 'драка',
-    # Троллинг и спам
     'бот', 'спам', 'лох', 'дурачок', 'тупой', 'нищеброд', 'засранец', 'флуд', 'тролль', 'хейт', 'бред', 'чушь'
 }
 
@@ -110,8 +106,10 @@ def process_file(file, is_image=False, is_video=False):
                 'zip': 'application/zip'
             }
             mime = mime_map.get(ext, 'application/octet-stream')
+        # ВАЖНО: добавляем ""
         return f"{mime};base64,{b64}", filename, mime
-    except:
+    except Exception as e:
+        print(f"Ошибка обработки файла: {e}")
         return None, None, None
 
 @app.route('/download/<int:idea_id>')
@@ -129,7 +127,8 @@ def download_file(idea_id):
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(base64.b64decode(b64data))
             return send_file(tmp.name, as_attachment=True, download_name=filename)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка скачивания: {e}")
         abort(400)
 
 @app.errorhandler(404)
@@ -168,7 +167,7 @@ def index():
     
     if query:
         sql = """
-            SELECT id, text, theme, custom_theme, votes, file_mime 
+            SELECT id, text, theme, custom_theme, votes, file_mime, file_data
             FROM ideas 
             WHERE text LIKE ? OR theme LIKE ? OR custom_theme LIKE ?
             ORDER BY votes DESC, created_at DESC
@@ -177,7 +176,7 @@ def index():
         ideas = conn.execute(sql, (like_term, like_term, like_term)).fetchall()
     else:
         ideas = conn.execute("""
-            SELECT id, text, theme, custom_theme, votes, file_mime 
+            SELECT id, text, theme, custom_theme, votes, file_mime, file_data
             FROM ideas 
             ORDER BY votes DESC, created_at DESC
         """).fetchall()
@@ -188,20 +187,11 @@ def index():
     for idea in ideas:
         theme = idea["custom_theme"] if idea["theme"] == "Другое" and idea["custom_theme"] else idea["theme"]
         media = ""
-        if idea["file_mime"] and idea["file_mime"].startswith('image/'):
-            conn2 = sqlite3.connect(DB_PATH)
-            conn2.row_factory = sqlite3.Row
-            file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
-            conn2.close()
-            if file_data and file_data["file_data"]:
-                media = f'<img src="{file_data["file_data"]}" class="media-preview">'
-        elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
-            conn2 = sqlite3.connect(DB_PATH)
-            conn2.row_factory = sqlite3.Row
-            file_data = conn2.execute("SELECT file_data FROM ideas WHERE id = ?", (idea["id"],)).fetchone()
-            conn2.close()
-            if file_data and file_data["file_data"]:
-                media = f'<video controls playsinline class="media-preview" src="{file_data["file_data"]}"></video>'
+        if idea["file_data"]:
+            if idea["file_mime"] and idea["file_mime"].startswith('image/'):
+                media = f'<img src="{idea["file_data"]}" class="media-preview">'
+            elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
+                media = f'<video controls playsinline class="media-preview" src="{idea["file_data"]}"></video>'
         
         ideas_html += f'''
         <div class="idea-card">
@@ -325,10 +315,11 @@ def idea_detail(idea_id):
     media = ""
     download_btn = f'<a href="/download/{idea_id}" class="download-btn">💾 Скачать файл</a>'
     
-    if idea["file_mime"] and idea["file_mime"].startswith('image/'):
-        media = f'<img src="{idea["file_data"]}" class="media-preview">'
-    elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
-        media = f'<video controls playsinline class="media-preview" src="{idea["file_data"]}"></video>'
+    if idea["file_data"]:
+        if idea["file_mime"] and idea["file_mime"].startswith('image/'):
+            media = f'<img src="{idea["file_data"]}" class="media-preview">'
+        elif idea["file_mime"] and idea["file_mime"].startswith('video/'):
+            media = f'<video controls playsinline class="media-preview" src="{idea["file_data"]}"></video>'
     
     replies_html = "".join(f'<div class="reply">{r["text"]}</div>' for r in replies)
     
