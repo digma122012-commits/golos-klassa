@@ -106,8 +106,8 @@ def process_file(file, is_image=False, is_video=False):
                 'zip': 'application/zip'
             }
             mime = mime_map.get(ext, 'application/octet-stream')
-        # ВАЖНО: добавляем ""
-        return f"{mime};base64,{b64}", filename, mime
+        # ВАЖНО: используем Data URL с префиксом "data:"
+        return f"data:{mime};base64,{b64}", filename, mime
     except Exception as e:
         print(f"Ошибка обработки файла: {e}")
         return None, None, None
@@ -121,7 +121,12 @@ def download_file(idea_id):
     if not idea or not idea['file_data']:
         abort(404)
     try:
-        header, b64data = idea['file_data'].split(',', 1)
+        # Разделяем по первой запятой — вдруг есть "data:..." в начале
+        if idea['file_data'].startswith('data:'):
+            header, b64data = idea['file_data'].split(',', 1)
+        else:
+            # Поддержка старых записей без "data:" (на всякий случай)
+            b64data = idea['file_data']
         filename = idea['file_name'] or f"file_{idea_id}"
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
