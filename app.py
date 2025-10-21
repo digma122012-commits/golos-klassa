@@ -106,11 +106,49 @@ def process_file(file, is_image=False, is_video=False):
                 'zip': 'application/zip'
             }
             mime = mime_map.get(ext, 'application/octet-stream')
-        # ВАЖНО: используем Data URL с префиксом "data:"
-        return f"data:{mime};base64,{b64}", filename, mime
+        return f"{mime};base64,{b64}", filename, mime
     except Exception as e:
         print(f"Ошибка обработки файла: {e}")
         return None, None, None
+
+def add_cat_watcher(html_content):
+    cat_code = '''
+<!-- Котик-наблюдатель -->
+<div id="catWatcher" style="position: fixed; bottom: 20px; right: 20px; width: 80px; height: 80px; z-index: 1000; pointer-events: none;">
+    <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="50" cy="60" r="35" fill="#f9c74f"/>
+        <polygon points="30,25 35,10 45,20" fill="#f9c74f"/>
+        <polygon points="70,25 65,10 55,20" fill="#f9c74f"/>
+        <circle cx="40" cy="50" r="8" fill="white"/>
+        <circle cx="60" cy="50" r="8" fill="white"/>
+        <circle cx="40" cy="50" r="4" fill="black" id="pupilLeft"/>
+        <circle cx="60" cy="50" r="4" fill="black" id="pupilRight"/>
+        <path d="M50,60 Q48,65 50,70 Q52,65 50,60 Z" fill="pink"/>
+        <line x1="20" y1="60" x2="35" y2="60" stroke="black" stroke-width="1"/>
+        <line x1="20" y1="65" x2="35" y2="65" stroke="black" stroke-width="1"/>
+        <line x1="80" y1="60" x2="65" y2="60" stroke="black" stroke-width="1"/>
+        <line x1="80" y1="65" x2="65" y2="65" stroke="black" stroke-width="1"/>
+    </svg>
+</div>
+<script>
+document.addEventListener('mousemove', (e) => {
+    const cat = document.getElementById('catWatcher');
+    if (!cat) return;
+    const rect = cat.getBoundingClientRect();
+    const catX = rect.left + rect.width / 2;
+    const catY = rect.top + rect.height / 2;
+    const angle = Math.atan2(e.clientY - catY, e.clientX - catX);
+    const d = 3;
+    const dx = Math.cos(angle) * d;
+    const dy = Math.sin(angle) * d;
+    document.getElementById('pupilLeft').setAttribute('cx', 40 + dx);
+    document.getElementById('pupilLeft').setAttribute('cy', 50 + dy);
+    document.getElementById('pupilRight').setAttribute('cx', 60 + dx);
+    document.getElementById('pupilRight').setAttribute('cy', 50 + dy);
+});
+</script>
+'''
+    return html_content.replace('</body>', cat_code + '</body>')
 
 @app.route('/download/<int:idea_id>')
 def download_file(idea_id):
@@ -121,12 +159,7 @@ def download_file(idea_id):
     if not idea or not idea['file_data']:
         abort(404)
     try:
-        # Разделяем по первой запятой — вдруг есть "data:..." в начале
-        if idea['file_data'].startswith('data:'):
-            header, b64data = idea['file_data'].split(',', 1)
-        else:
-            # Поддержка старых записей без "data:" (на всякий случай)
-            b64data = idea['file_data']
+        header, b64data = idea['file_data'].split(',', 1)
         filename = idea['file_name'] or f"file_{idea_id}"
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -138,7 +171,7 @@ def download_file(idea_id):
 
 @app.errorhandler(404)
 def not_found(e):
-    return render_template_string('''
+    html = '''
     <!DOCTYPE html>
     <html>
     <head><title>404 — Не найдено</title></head>
@@ -148,11 +181,12 @@ def not_found(e):
         <a href="/">← Вернуться на главную</a>
     </body>
     </html>
-    '''), 404
+    '''
+    return add_cat_watcher(html), 404
 
 @app.errorhandler(400)
 def bad_request(e):
-    return render_template_string('''
+    html = '''
     <!DOCTYPE html>
     <html>
     <head><title>400 — Ошибка</title></head>
@@ -162,7 +196,8 @@ def bad_request(e):
         <a href="/">← Вернуться на главную</a>
     </body>
     </html>
-    '''), 400
+    '''
+    return add_cat_watcher(html), 400
 
 @app.route('/')
 def index():
@@ -222,7 +257,7 @@ def index():
     </form>
     '''
     
-    return render_template_string(f'''
+    html = f'''
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -304,7 +339,8 @@ def index():
         </script>
     </body>
     </html>
-    ''')
+    '''
+    return add_cat_watcher(html)
 
 @app.route('/ideas/<int:idea_id>')
 def idea_detail(idea_id):
@@ -328,7 +364,7 @@ def idea_detail(idea_id):
     
     replies_html = "".join(f'<div class="reply">{r["text"]}</div>' for r in replies)
     
-    return render_template_string(f'''
+    html = f'''
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -367,7 +403,8 @@ def idea_detail(idea_id):
         </div>
     </body>
     </html>
-    ''')
+    '''
+    return add_cat_watcher(html)
 
 @app.route('/add', methods=['POST'])
 def add_idea():
@@ -423,7 +460,6 @@ def vote(idea_id):
     conn.close()
     return redirect('/')
 
-# Админка
 @app.route('/admin')
 def admin_panel():
     password = request.args.get('password')
@@ -442,13 +478,14 @@ def admin_panel():
             <a href="/admin/delete/{idea["id"]}?password={password}" onclick="return confirm('Удалить?')">🗑️</a>
         </div>
         '''
-    return f'''
+    html = f'''
     <div style="max-width:800px; margin:0 auto; padding:20px;">
         <h2>Админка</h2>
         {content}
         <a href="/">← Назад</a>
     </div>
     '''
+    return add_cat_watcher(html)
 
 @app.route('/admin/delete/<int:idea_id>')
 def delete_idea(idea_id):
