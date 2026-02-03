@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Админка — Голос класса{% endblock %}
+{% block content %}
+<div class="container">
+    <h2>🔐 Админка — Модерация</h2>
+    <p>Здесь вы можете удалять идеи и блокировать нарушителей.</p>
+    
+    {% if ideas %}
+        {% for idea in ideas %}
+        <div class="idea-card">
+            <div class="theme-badge">
+                {{ idea.custom_theme if idea.theme == 'Другое' and idea.custom_theme else idea.theme }}
+            </div>
+            <p><strong>{{ idea.text[:100] }}{% if idea.text|length > 100 %}...{% endif %}</strong></p>
+            <div style="font-size:13px; color:#666; margin:8px 0;">
+                <span>IP: {{ idea.ip }}</span><br>
+                <span>Голосов: {{ idea.votes }}</span>
+            </div>
+            <div style="margin-top:10px;">
+                <a href="/admin/delete/{{ idea.id }}?password={{ password }}" 
+                   onclick="return confirm('Удалить идею и все ответы?')" 
+                   style="color:#e74c3c; text-decoration:none; margin-right:15px;">
+                    🗑️ Удалить
+                </a>
+                <a href="/admin/ban/{{ idea.id }}?password={{ password }}" 
+                   onclick="return confirm('Забанить этого пользователя навсегда? Он не сможет писать новые идеи и ответы.')" 
+                   style="color:#8e44ad; text-decoration:none;">
+                    🚫 Забанить
+                </a>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p>Нет идей для модерации.</p>
+    {% endif %}
+    
+    <a href="/" class="back">← Вернуться на главную</a>
+</div>
+{% endblock %}

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <h1>🗣️ Голос класса</h1>
+    <p style="font-size:14px; color:#e74c3c;">⚠️ Файлы могут удаляться при простое сайта. Не загружайте важные документы!</p>
+    
+    <form method="GET">
+        <input type="text" name="q" value="{{ query }}" placeholder="Поиск по идеям и темам..." 
+               style="width:100%; padding:12px; border:1px solid #ddd; border-radius:8px; font-size:16px;">
+        <button type="submit" style="margin-top:10px; width:100%; padding:12px; background:#3498db; color:white; border:none; border-radius:8px; cursor:pointer;">
+            🔍 Найти
+        </button>
+        {% if query %}
+        <div style="margin-top:10px;"><a href="/" style="color:#3498db; text-decoration:underline;">Показать все идеи</a></div>
+        {% endif %}
+    </form>
+    
+    <form method="POST" action="/add" enctype="multipart/form-data">
+        <select name="theme" required onchange="toggleCustomTheme()">
+            <option value="">Выберите тему</option>
+            {% for t in themes %}
+            <option value="{{ t }}">{{ t }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" name="custom_theme" id="customTheme" placeholder="Ваша тема..." style="display:none;">
+        
+        <textarea name="text" placeholder="Ваша идея (до 200 символов)..." maxlength="200" required></textarea>
+        
+        <input type="file" name="image" accept="image/*" style="display:none;" id="imageInput">
+        <input type="file" name="video" accept="video/mp4,video/webm" style="display:none;" id="videoInput">
+        <input type="file" name="file" accept="*/*" style="display:none;" id="fileInput">
+        
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin:12px 0;">
+            <button type="button" onclick="document.getElementById('imageInput').click()">📷 Фото</button>
+            <button type="button" onclick="document.getElementById('videoInput').click()">🎥 Видео</button>
+            <button type="button" onclick="document.getElementById('fileInput').click()">📎 Любой файл</button>
+        </div>
+        
+        <button type="submit">➕ Добавить идею</button>
+    </form>
+    <hr>
+    <h2>Идеи {% if query %}по запросу: {{ query }}{% endif %}</h2>
+    {% if ideas %}
+        {% for idea in ideas %}
+        <div class="idea-card">
+            <div class="theme-badge">{{ idea.custom_theme if idea.theme == 'Другое' and idea.custom_theme else idea.theme }}</div>
+            {% if idea.file_mime and idea.file_mime.startswith('image/') %}
+                <img src="{{ url_for('preview_file', idea_id=idea.id) }}" class="media-preview">
+            {% elif idea.file_mime and idea.file_mime.startswith('video/') %}
+                <video controls playsinline class="media-preview" src="{{ url_for('preview_file', idea_id=idea.id) }}"></video>
+            {% endif %}
+            <h3>{{ idea.text[:100] }}{% if idea.text|length > 100 %}...{% endif %}</h3>
+            <div class="meta">
+                <span>Голосов: {{ idea.votes }}</span>
+                <a href="{{ url_for('vote', idea_id=idea.id) }}">✅ Поддержать</a>
+                <a href="{{ url_for('idea_detail', idea_id=idea.id) }}">Подробнее →</a>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <p>{% if query %}Ничего не найдено.{% else %}Пока нет идей.{% endif %}</p>
+    {% endif %}
+</div>
+<script>
+    function toggleCustomTheme() {
+        const select = document.querySelector('select[name="theme"]');
+        const custom = document.getElementById('customTheme');
+        custom.style.display = select.value === 'Другое' ? 'block' : 'none';
+        if (select.value !== 'Другое') custom.value = '';
+    }
+    document.getElementById('imageInput').addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+            document.getElementById('videoInput').value = '';
+            document.getElementById('fileInput').value = '';
+        }
+    });
+    document.getElementById('videoInput').addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+            document.getElementById('imageInput').value = '';
+            document.getElementById('fileInput').value = '';
+        }
+    });
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+            document.getElementById('imageInput').value = '';
+            document.getElementById('videoInput').value = '';
+        }
+    });
+</script>
+{% endblock %}

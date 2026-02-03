@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container">
+    <a href="{{ url_for('index') }}" class="back">← Все идеи</a>
+    <div class="theme-badge">{{ idea.custom_theme if idea.theme == 'Другое' and idea.custom_theme else idea.theme }}</div>
+    <h2>{{ idea.text }}</h2>
+    {% if idea.file_mime and idea.file_mime.startswith('image/') %}
+        <img src="{{ url_for('preview_file', idea_id=idea.id) }}" class="media-preview">
+    {% elif idea.file_mime and idea.file_mime.startswith('video/') %}
+        <video controls playsinline class="media-preview" src="{{ url_for('preview_file', idea_id=idea.id) }}"></video>
+    {% endif %}
+    <a href="{{ url_for('download_file', idea_id=idea.id) }}" class="download-btn">💾 Скачать файл</a>
+    <p><strong>Голосов за идею:</strong> {{ idea.votes }}</p>
+    <h3>Ответы ({{ replies|length }})</h3>
+    {% for reply in replies %}
+    <div class="reply">{{ reply.text }}</div>
+    {% endfor %}
+    <form method="POST" action="/reply">
+        <input type="hidden" name="idea_id" value="{{ idea.id }}">
+        <input type="text" name="text" placeholder="Ваш ответ (до 150 символов)..." maxlength="150" required>
+        <button type="submit">📨 Ответить</button>
+    </form>
+</div>
+{% endblock %}

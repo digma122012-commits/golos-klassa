@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>{% block title %}Голос класса{% endblock %}</title>
+</head>
+<body>
+    {% block content %}{% endblock %}
+    
+    <!-- Котик-наблюдатель -->
+    <div id="catWatcher" style="position: fixed; bottom: 20px; right: 20px; width: 80px; height: 80px; z-index: 1000; pointer-events: none;">
+        <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="60" r="35" fill="#f9c74f"/>
+            <polygon points="30,25 35,10 45,20" fill="#f9c74f"/>
+            <polygon points="70,25 65,10 55,20" fill="#f9c74f"/>
+            <circle cx="40" cy="50" r="8" fill="white"/>
+            <circle cx="60" cy="50" r="8" fill="white"/>
+            <circle cx="40" cy="50" r="4" fill="black" id="pupilLeft"/>
+            <circle cx="60" cy="50" r="4" fill="black" id="pupilRight"/>
+            <path d="M50,60 Q48,65 50,70 Q52,65 50,60 Z" fill="pink"/>
+            <line x1="20" y1="60" x2="35" y2="60" stroke="black" stroke-width="1"/>
+            <line x1="20" y1="65" x2="35" y2="65" stroke="black" stroke-width="1"/>
+            <line x1="80" y1="60" x2="65" y2="60" stroke="black" stroke-width="1"/>
+            <line x1="80" y1="65" x2="65" y2="65" stroke="black" stroke-width="1"/>
+        </svg>
+    </div>
+    <script>
+        document.addEventListener('mousemove', (e) => {
+            const cat = document.getElementById('catWatcher');
+            if (!cat) return;
+            const rect = cat.getBoundingClientRect();
+            const catX = rect.left + rect.width / 2;
+            const catY = rect.top + rect.height / 2;
+            const angle = Math.atan2(e.clientY - catY, e.clientX - catX);
+            const d = 3;
+            const dx = Math.cos(angle) * d;
+            const dy = Math.sin(angle) * d;
+            document.getElementById('pupilLeft').setAttribute('cx', 40 + dx);
+            document.getElementById('pupilLeft').setAttribute('cy', 50 + dy);
+            document.getElementById('pupilRight').setAttribute('cx', 60 + dx);
+            document.getElementById('pupilRight').setAttribute('cy', 50 + dy);
+        });
+    </script>
+</body>
+</html>
